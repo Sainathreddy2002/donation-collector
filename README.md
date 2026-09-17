@@ -1,4 +1,4 @@
-# Seva — group donation collector
+# Nidhi — group donation collector
 
 Mobile-first React + Vite app with Supabase (Google auth). English + Telugu.
 
