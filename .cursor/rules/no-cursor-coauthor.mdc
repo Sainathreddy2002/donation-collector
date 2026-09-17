@@ -27,3 +27,13 @@ Cursor may inject a co-author trailer automatically. Immediately:
 
 1. `git log -1 --format='%B'` (and scan commits being pushed)
 2. Do not push until every commit body is clean of Cursor attribution
+
+## Author for this personal repo
+
+Commits must use personal identity, never the work account:
+
+- name: `Sainath`
+- email: `sainathreddypala@gmail.com`
+
+Never commit as `sainath@analyticsquad4.com` / sainathaq4 in this repo.
+Before commit, check `git config user.email`. If it is the work email, stop and use the local personal identity.
