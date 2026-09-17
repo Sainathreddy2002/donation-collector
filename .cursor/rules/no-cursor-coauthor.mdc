@@ -1,0 +1,29 @@
+---
+description: Never attribute commits to Cursor — strip trailers immediately
+alwaysApply: true
+---
+
+# No Cursor commit attribution
+
+Never add, keep, or push any Cursor co-author attribution.
+
+Forbidden in commits and PRs:
+- `Co-authored-by: Cursor`
+- `cursoragent@cursor.com`
+- `--trailer` with Cursor / cursoragent
+- "Made with Cursor"
+
+Author and committer must be the user only.
+
+## After every `git commit` (mandatory)
+
+Cursor may inject a co-author trailer automatically. Immediately:
+
+1. `git log -1 --format='%B'`
+2. If the body mentions Cursor / cursoragent / `Co-authored-by: Cursor`, strip it before doing anything else
+3. Prefer rewrite via `git filter-branch` / `commit-tree` / equivalent — do not leave a dirty HEAD
+
+## Before every `git push` (mandatory)
+
+1. `git log -1 --format='%B'` (and scan commits being pushed)
+2. Do not push until every commit body is clean of Cursor attribution
