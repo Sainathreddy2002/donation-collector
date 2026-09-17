@@ -1,5 +1,6 @@
 import { useEffect, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
+import { IconNote, IconRupee, IconSave, IconUser } from './Icons'
 
 type FormState = {
   donor_name: string
@@ -57,7 +58,7 @@ export function DonationFormDrawer({
           <div>
             <p className="drawer__eyebrow">{t('appName')}</p>
             <h2 id="donation-form-title" className="drawer__title">
-              {isEditing ? t('edit') : t('addDonation')}
+              {isEditing ? t('editDonation') : t('addDonation')}
             </h2>
           </div>
           <button type="button" className="drawer__close" onClick={onClose}>
@@ -67,7 +68,10 @@ export function DonationFormDrawer({
 
         <form className="drawer__body drawer__form" onSubmit={onSubmit}>
           <label className="field">
-            <span>{t('donorName')}</span>
+            <span className="field__label">
+              <IconUser size={16} />
+              {t('donorName')}
+            </span>
             <input
               value={form.donor_name}
               onChange={(e) => onChange({ ...form, donor_name: e.target.value })}
@@ -76,7 +80,10 @@ export function DonationFormDrawer({
             />
           </label>
           <label className="field">
-            <span>{t('amount')}</span>
+            <span className="field__label">
+              <IconRupee size={16} />
+              {t('amount')}
+            </span>
             <input
               type="number"
               inputMode="decimal"
@@ -88,7 +95,10 @@ export function DonationFormDrawer({
             />
           </label>
           <label className="field">
-            <span>{t('notes')}</span>
+            <span className="field__label">
+              <IconNote size={16} />
+              {t('notes')}
+            </span>
             <input
               value={form.notes}
               onChange={(e) => onChange({ ...form, notes: e.target.value })}
@@ -99,6 +109,7 @@ export function DonationFormDrawer({
           {error ? <p className="form-error">{error}</p> : null}
           <div className="action-row">
             <button type="submit" className="btn btn--primary" disabled={saving}>
+              <IconSave size={18} />
               {saving ? t('loading') : t('save')}
             </button>
             <button type="button" className="btn btn--ghost" onClick={onClose}>

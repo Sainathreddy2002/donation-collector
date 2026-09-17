@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../auth/AuthProvider'
 import { LanguageToggle } from './LanguageToggle'
+import { IconBack, IconHome, IconLogo, IconUser } from './Icons'
 
 function initials(name?: string | null, email?: string | null) {
   const source = name?.trim() || email?.split('@')[0] || '?'
@@ -32,10 +33,12 @@ export function AppShell({
         <div className="topbar__row">
           {showBack ? (
             <Link to="/" className="back-link">
-              ← {t('back')}
+              <IconBack size={18} />
+              {t('back')}
             </Link>
           ) : (
             <Link to="/" className="brand">
+              <IconLogo size={22} />
               {t('appName')}
             </Link>
           )}
@@ -68,7 +71,7 @@ export function AppShell({
         <nav className="bottom-nav" aria-label="Main">
           <Link to="/" className={onHome ? 'bottom-nav__item is-active' : 'bottom-nav__item'}>
             <span className="bottom-nav__icon" aria-hidden>
-              ⌂
+              <IconHome size={20} />
             </span>
             <span>{t('navHome')}</span>
           </Link>
@@ -77,7 +80,7 @@ export function AppShell({
             className={onProfile ? 'bottom-nav__item is-active' : 'bottom-nav__item'}
           >
             <span className="bottom-nav__icon" aria-hidden>
-              ◯
+              <IconUser size={20} />
             </span>
             <span>{t('profile')}</span>
           </Link>

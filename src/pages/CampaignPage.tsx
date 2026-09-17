@@ -1,18 +1,53 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AppShell } from '../components/AppShell'
-import { IconEdit, IconHistory, IconTrash } from '../components/Icons'
+import {
+  IconCalendar,
+  IconCheck,
+  IconCopy,
+  IconEdit,
+  IconFilter,
+  IconHistory,
+  IconLink,
+  IconMapPin,
+  IconPlus,
+  IconRupee,
+  IconSearch,
+  IconTrash,
+  IconUser,
+} from '../components/Icons'
+import { FilterDrawer } from '../components/FilterDrawer'
 import { HistoryDrawer } from '../components/HistoryDrawer'
 import { DonationFormDrawer } from '../components/DonationFormDrawer'
+import {
+  CampaignFormDrawer,
+  type CampaignFormState,
+} from '../components/CampaignFormDrawer'
 import { useAuth } from '../auth/AuthProvider'
-import { supabase } from '../lib/supabase'
-import type { Campaign, DonationHistoryWithEditor, DonationWithRecorder } from '../types/database'
+import {
+  createDonation,
+  fetchCampaignBundle,
+  softDeleteDonation,
+  updateCampaign,
+  updateDonation,
+} from '../lib/api'
+import { queryKeys } from '../lib/query'
+import type { DonationWithRecorder } from '../types/database'
 import { appUrl } from '../lib/urls'
 
 type SortKey = 'newest' | 'amount_desc' | 'amount_asc' | 'name'
 
 const emptyForm = { donor_name: '', amount: '', notes: '' }
+
+const emptyCampaignForm: CampaignFormState = {
+  title: '',
+  description: '',
+  location: '',
+  targetAmount: '',
+  eventDate: '',
+}
 
 function formatDate(value: string | null) {
   if (!value) return null
@@ -49,104 +84,92 @@ export function CampaignPage() {
   const { id } = useParams<{ id: string }>()
   const { t } = useTranslation()
   const { user } = useAuth()
+  const queryClient = useQueryClient()
 
-  const [campaign, setCampaign] = useState<Campaign | null>(null)
-  const [donations, setDonations] = useState<DonationWithRecorder[]>([])
-  const [historyByDonation, setHistoryByDonation] = useState<
-    Record<string, DonationHistoryWithEditor[]>
-  >({})
-  const [historyDonation, setHistoryDonation] = useState<DonationWithRecorder | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortKey>('amount_desc')
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [copied, setCopied] = useState(false)
 
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<DonationWithRecorder | null>(null)
   const [form, setForm] = useState(emptyForm)
   const [formError, setFormError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
+  const [editCampaignOpen, setEditCampaignOpen] = useState(false)
+  const [campaignForm, setCampaignForm] = useState<CampaignFormState>(emptyCampaignForm)
+  const [campaignFormError, setCampaignFormError] = useState<string | null>(null)
+  const [historyDonation, setHistoryDonation] = useState<DonationWithRecorder | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  const bundleQuery = useQuery({
+    queryKey: queryKeys.campaign(id ?? ''),
+    queryFn: () => fetchCampaignBundle(id!),
+    enabled: !!id,
+  })
+
+  const campaign = bundleQuery.data?.campaign ?? null
+  const donations = bundleQuery.data?.donations ?? []
+  const historyByDonation = bundleQuery.data?.historyByDonation ?? {}
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (!user || !id) throw new Error('missing user')
+      const name = form.donor_name.trim()
+      const amount = Number(form.amount)
+      if (!name) throw new Error('emptyName')
+      if (!Number.isFinite(amount) || amount < 0) throw new Error('emptyAmount')
+
+      if (editing) {
+        await updateDonation({
+          id: editing.id,
+          donor_name: name,
+          amount,
+          notes: form.notes.trim() || null,
+        })
+      } else {
+        await createDonation({
+          campaign_id: id,
+          donor_name: name,
+          amount,
+          notes: form.notes.trim() || null,
+          recorded_by: user.id,
+        })
+      }
+    },
+    onSuccess: async () => {
+      closeForm()
+      await queryClient.invalidateQueries({ queryKey: queryKeys.campaign(id!) })
+    },
+    onError: (err: Error) => {
+      if (err.message === 'emptyName') setFormError(t('emptyName'))
+      else if (err.message === 'emptyAmount') setFormError(t('emptyAmount'))
+      else setFormError(t('errorGeneric'))
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (donationId: string) => softDeleteDonation(donationId, user!.id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.campaign(id!) })
+    },
+    onError: () => setActionError(t('errorGeneric')),
+  })
+
+  const updateCampaignMutation = useMutation({
+    mutationFn: updateCampaign,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.campaign(id!) }),
+        user?.id
+          ? queryClient.invalidateQueries({ queryKey: queryKeys.campaigns(user.id) })
+          : Promise.resolve(),
+      ])
+      closeEditCampaign()
+    },
+    onError: () => setCampaignFormError(t('errorGeneric')),
+  })
 
   const isCreator = !!user && !!campaign && campaign.created_by === user.id
-
-  useEffect(() => {
-    if (!id) return
-    void loadAll()
-  }, [id])
-
-  async function loadAll() {
-    setLoading(true)
-    setError(null)
-
-    const [{ data: camp, error: campErr }, { data: dons, error: donErr }, { data: hist, error: histErr }] =
-      await Promise.all([
-        supabase.from('campaigns').select('*').eq('id', id!).single(),
-        supabase
-          .from('donations')
-          .select('*')
-          .eq('campaign_id', id!)
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('donation_history')
-          .select('*')
-          .eq('campaign_id', id!)
-          .order('created_at', { ascending: false }),
-      ])
-
-    if (campErr || donErr) {
-      setError(t('errorGeneric'))
-      setCampaign(camp)
-      setDonations([])
-      setLoading(false)
-      return
-    }
-
-    const recorderIds = [...new Set((dons ?? []).map((d) => d.recorded_by))]
-    const deleterIds = [...new Set((dons ?? []).map((d) => d.deleted_by).filter(Boolean))] as string[]
-    const editorIds = [...new Set((hist ?? []).map((h) => h.changed_by).filter(Boolean))] as string[]
-    const profileIds = [...new Set([...recorderIds, ...deleterIds, ...editorIds])]
-
-    let profileMap = new Map<string, { display_name: string | null; avatar_url: string | null }>()
-    if (profileIds.length > 0) {
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, display_name, avatar_url')
-        .in('id', profileIds)
-      profileMap = new Map(
-        (profiles ?? []).map((p) => [p.id, { display_name: p.display_name, avatar_url: p.avatar_url }]),
-      )
-    }
-
-    const grouped: Record<string, DonationHistoryWithEditor[]> = {}
-    for (const row of hist ?? []) {
-      const item: DonationHistoryWithEditor = {
-        ...row,
-        editor: row.changed_by
-          ? { display_name: profileMap.get(row.changed_by)?.display_name ?? null }
-          : null,
-      }
-      if (!grouped[row.donation_id]) grouped[row.donation_id] = []
-      grouped[row.donation_id].push(item)
-    }
-
-    if (histErr) {
-      console.warn('donation_history unavailable', histErr.message)
-    }
-
-    setCampaign(camp)
-    setDonations(
-      (dons ?? []).map((d) => ({
-        ...d,
-        recorder: profileMap.get(d.recorded_by) ?? null,
-        deleter: d.deleted_by
-          ? { display_name: profileMap.get(d.deleted_by)?.display_name ?? null }
-          : null,
-      })),
-    )
-    setHistoryByDonation(grouped)
-    setLoading(false)
-  }
 
   const activeDonations = useMemo(
     () => donations.filter((d) => !d.deleted_at),
@@ -221,72 +244,58 @@ export function CampaignPage() {
     setFormError(null)
   }
 
-  async function handleSave(e: FormEvent) {
-    e.preventDefault()
-    if (!user || !id) return
-
-    const name = form.donor_name.trim()
-    const amount = Number(form.amount)
-    if (!name) {
-      setFormError(t('emptyName'))
-      return
-    }
-    if (!Number.isFinite(amount) || amount < 0) {
-      setFormError(t('emptyAmount'))
-      return
-    }
-
-    setSaving(true)
-    setFormError(null)
-
-    if (editing) {
-      const { error: updErr } = await supabase
-        .from('donations')
-        .update({
-          donor_name: name,
-          amount,
-          notes: form.notes.trim() || null,
-        })
-        .eq('id', editing.id)
-
-      setSaving(false)
-      if (updErr) {
-        setFormError(t('errorGeneric'))
-        return
-      }
-    } else {
-      const { error: insErr } = await supabase.from('donations').insert({
-        campaign_id: id,
-        donor_name: name,
-        amount,
-        notes: form.notes.trim() || null,
-        recorded_by: user.id,
-      })
-
-      setSaving(false)
-      if (insErr) {
-        setFormError(t('errorGeneric'))
-        return
-      }
-    }
-
-    closeForm()
-    await loadAll()
+  function openEditCampaign() {
+    if (!campaign) return
+    setCampaignForm({
+      title: campaign.title,
+      description: campaign.description ?? '',
+      location: campaign.location ?? '',
+      targetAmount: campaign.target_amount != null ? String(campaign.target_amount) : '',
+      eventDate: campaign.event_date ?? '',
+    })
+    setCampaignFormError(null)
+    setEditCampaignOpen(true)
   }
 
-  async function handleSoftDelete(d: DonationWithRecorder) {
-    if (!user || !window.confirm(t('confirmDelete'))) return
-    const { error: delErr } = await supabase
-      .from('donations')
-      .update({
-        deleted_at: new Date().toISOString(),
-        deleted_by: user.id,
-      })
-      .eq('id', d.id)
-      .is('deleted_at', null)
+  function closeEditCampaign() {
+    setEditCampaignOpen(false)
+    setCampaignForm(emptyCampaignForm)
+    setCampaignFormError(null)
+  }
 
-    if (delErr) setError(t('errorGeneric'))
-    else await loadAll()
+  function handleSaveCampaign(e: FormEvent) {
+    e.preventDefault()
+    if (!campaign || !campaignForm.title.trim()) return
+    setCampaignFormError(null)
+
+    const target = campaignForm.targetAmount.trim() ? Number(campaignForm.targetAmount) : null
+    if (
+      campaignForm.targetAmount.trim() &&
+      (!Number.isFinite(target) || (target ?? 0) < 0)
+    ) {
+      setCampaignFormError(t('emptyAmount'))
+      return
+    }
+
+    updateCampaignMutation.mutate({
+      id: campaign.id,
+      title: campaignForm.title.trim(),
+      description: campaignForm.description.trim() || null,
+      location: campaignForm.location.trim() || null,
+      target_amount: target,
+      event_date: campaignForm.eventDate || null,
+    })
+  }
+
+  function handleSave(e: FormEvent) {
+    e.preventDefault()
+    setFormError(null)
+    saveMutation.mutate()
+  }
+
+  function handleSoftDelete(d: DonationWithRecorder) {
+    if (!user || !window.confirm(t('confirmDelete'))) return
+    deleteMutation.mutate(d.id)
   }
 
   function actionLabel(action: string) {
@@ -308,8 +317,14 @@ export function CampaignPage() {
               <div>
                 <div className="donation-card__name-row">
                   <span className="donation-card__name">{d.donor_name}</span>
-                  {deleted ? <span className="donation-card__badge donation-card__badge--deleted">{t('deletedBadge')}</span> : null}
-                  {!deleted && wasEdited ? <span className="donation-card__badge">{t('editedBadge')}</span> : null}
+                  {deleted ? (
+                    <span className="donation-card__badge donation-card__badge--deleted">
+                      {t('deletedBadge')}
+                    </span>
+                  ) : null}
+                  {!deleted && wasEdited ? (
+                    <span className="donation-card__badge">{t('editedBadge')}</span>
+                  ) : null}
                 </div>
                 {d.notes ? <p className="donation-card__notes">{d.notes}</p> : null}
               </div>
@@ -318,15 +333,18 @@ export function CampaignPage() {
           </div>
 
           <div className="donation-card__meta">
-            <span>
-              {t('recordedBy')}{' '}
-              <strong>{d.recorder?.display_name || t('unknownRecorder')}</strong>
+            <span className="meta-with-icon">
+              <IconUser size={14} />
+              {t('recordedBy')} <strong>{d.recorder?.display_name || t('unknownRecorder')}</strong>
             </span>
-            <span>{formatDateTime(d.created_at)}</span>
+            <span className="meta-with-icon">
+              <IconCalendar size={14} />
+              {formatDateTime(d.created_at)}
+            </span>
             {deleted && d.deleted_at ? (
-              <span>
-                {t('deletedBy')}{' '}
-                <strong>{d.deleter?.display_name || t('unknownRecorder')}</strong>
+              <span className="meta-with-icon">
+                <IconTrash size={14} />
+                {t('deletedBy')} <strong>{d.deleter?.display_name || t('unknownRecorder')}</strong>
                 {' · '}
                 {formatDateTime(d.deleted_at)}
               </span>
@@ -340,8 +358,8 @@ export function CampaignPage() {
                   type="button"
                   className="icon-btn"
                   onClick={() => openEdit(d)}
-                  aria-label={t('edit')}
-                  title={t('edit')}
+                  aria-label={t('editDonation')}
+                  title={t('editDonation')}
                 >
                   <IconEdit />
                 </button>
@@ -358,7 +376,7 @@ export function CampaignPage() {
                 <button
                   type="button"
                   className="icon-btn icon-btn--danger"
-                  onClick={() => void handleSoftDelete(d)}
+                  onClick={() => handleSoftDelete(d)}
                   aria-label={t('delete')}
                   title={t('delete')}
                 >
@@ -383,7 +401,7 @@ export function CampaignPage() {
     )
   }
 
-  if (loading) {
+  if (bundleQuery.isLoading) {
     return (
       <AppShell showBack hideNav>
         <p className="muted">{t('loading')}</p>
@@ -399,32 +417,55 @@ export function CampaignPage() {
     )
   }
 
+  const error = actionError || (bundleQuery.isError ? t('errorGeneric') : null)
+
   return (
     <AppShell showBack hideNav title={campaign.title}>
       <div className="campaign-meta">
         {campaign.description ? <p className="campaign-desc">{campaign.description}</p> : null}
         <div className="meta-chips">
-          {campaign.location ? <span className="meta-chip">{campaign.location}</span> : null}
+          {campaign.location ? (
+            <span className="meta-chip">
+              <IconMapPin size={14} />
+              {campaign.location}
+            </span>
+          ) : null}
           {campaign.event_date ? (
-            <span className="meta-chip">{formatDate(campaign.event_date)}</span>
+            <span className="meta-chip">
+              <IconCalendar size={14} />
+              {formatDate(campaign.event_date)}
+            </span>
           ) : null}
         </div>
+        {isCreator ? (
+          <button type="button" className="btn btn--secondary btn--sm" onClick={openEditCampaign}>
+            <IconEdit size={16} />
+            {t('editCampaign')}
+          </button>
+        ) : null}
       </div>
 
       <div className="invite-banner">
         <div className="invite-banner__text">
-          <p className="invite-banner__label">{t('shareLink')}</p>
+          <p className="invite-banner__label">
+            <IconLink size={16} />
+            {t('shareLink')}
+          </p>
           <p className="invite-banner__code">{campaign.invite_code}</p>
           <p className="invite-banner__hint">{t('shareLinkHint')}</p>
         </div>
         <button type="button" className="btn btn--secondary btn--sm" onClick={() => void copyInviteLink()}>
+          {copied ? <IconCheck size={16} /> : <IconCopy size={16} />}
           {copied ? t('copied') : t('copyLink')}
         </button>
       </div>
 
       <div className="stats stats--single">
         <div className="stat stat--hero">
-          <span className="stat__label">{t('totalCollected')}</span>
+          <span className="stat__label">
+            <IconRupee size={16} />
+            {t('totalCollected')}
+          </span>
           <span className="stat__value">{formatMoney(total)}</span>
           {campaign.target_amount != null ? (
             <>
@@ -444,33 +485,27 @@ export function CampaignPage() {
         </div>
       </div>
 
-      <div className="toolbar">
-        <input
-          className="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={t('searchDonations')}
-          type="search"
-        />
-        <div className="sort-row" role="group" aria-label={t('sortBy')}>
-          {(
-            [
-              ['amount_desc', t('sortAmountHigh')],
-              ['amount_asc', t('sortAmountLow')],
-              ['newest', t('sortNewest')],
-              ['name', t('sortName')],
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              className={sort === key ? 'chip is-active' : 'chip'}
-              onClick={() => setSort(key)}
-            >
-              {label}
-            </button>
-          ))}
+      <div className="search-toolbar">
+        <div className="search-wrap">
+          <IconSearch className="search-wrap__icon" size={18} />
+          <input
+            className="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('searchDonations')}
+            type="search"
+          />
         </div>
+        <button
+          type="button"
+          className={sort !== 'amount_desc' ? 'icon-btn icon-btn--active' : 'icon-btn'}
+          onClick={() => setFiltersOpen(true)}
+          aria-label={t('openFilters')}
+          title={t('openFilters')}
+        >
+          <IconFilter />
+          {sort !== 'amount_desc' ? <span className="icon-btn__dot" aria-hidden /> : null}
+        </button>
       </div>
 
       {error ? <p className="form-error">{error}</p> : null}
@@ -498,6 +533,7 @@ export function CampaignPage() {
 
       <div className="fab-bar">
         <button type="button" className="btn btn--primary btn--block btn--xl" onClick={openCreate}>
+          <IconPlus size={20} />
           {t('addDonation')}
         </button>
       </div>
@@ -506,11 +542,22 @@ export function CampaignPage() {
         open={showForm}
         isEditing={!!editing}
         form={form}
-        saving={saving}
+        saving={saveMutation.isPending}
         error={formError}
         onChange={setForm}
-        onSubmit={(e) => void handleSave(e)}
+        onSubmit={handleSave}
         onClose={closeForm}
+      />
+
+      <CampaignFormDrawer
+        open={editCampaignOpen}
+        isEditing
+        form={campaignForm}
+        saving={updateCampaignMutation.isPending}
+        error={campaignFormError}
+        onChange={setCampaignForm}
+        onSubmit={handleSaveCampaign}
+        onClose={closeEditCampaign}
       />
 
       <HistoryDrawer
@@ -521,6 +568,35 @@ export function CampaignPage() {
         formatMoney={formatMoney}
         actionLabel={actionLabel}
       />
+
+      <FilterDrawer
+        open={filtersOpen}
+        title={t('sortBy')}
+        active={sort !== 'amount_desc'}
+        onClose={() => setFiltersOpen(false)}
+        onClear={() => setSort('amount_desc')}
+      >
+        <p className="sort-label">{t('sortBy')}</p>
+        <div className="sort-row" role="group" aria-label={t('sortBy')}>
+          {(
+            [
+              ['amount_desc', t('sortAmountHigh')],
+              ['amount_asc', t('sortAmountLow')],
+              ['newest', t('sortNewest')],
+              ['name', t('sortName')],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              className={sort === key ? 'chip is-active' : 'chip'}
+              onClick={() => setSort(key)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </FilterDrawer>
     </AppShell>
   )
 }

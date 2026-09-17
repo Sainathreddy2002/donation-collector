@@ -3,6 +3,7 @@ import { Navigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../auth/AuthProvider'
 import { LanguageToggle } from '../components/LanguageToggle'
+import { IconLogo } from '../components/Icons'
 import { appUrl } from '../lib/urls'
 
 function safeNextPath(raw: string | null) {
@@ -43,7 +44,10 @@ export function LoginPage() {
         <div className="login__lang">
           <LanguageToggle />
         </div>
-        <p className="login__brand">{t('appName')}</p>
+        <div className="login__brand-row">
+          <IconLogo size={36} />
+          <p className="login__brand">{t('appName')}</p>
+        </div>
         <p className="login__tagline">{t('tagline')}</p>
         {next ? <p className="hint">{t('joinAfterLogin')}</p> : null}
         {error ? <p className="form-error">{error}</p> : null}
